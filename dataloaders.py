@@ -31,18 +31,20 @@ def create_dataloaders(train_dir: str, valid_dir: str, test_dir: str, train_tran
       A tuple of (train_dataloader, validation_dataloader, test_dataloader, class_names).
 
     Example usuage:
-      train_dataloader, test_dataloader, class_names = create_dataloaders(
-                                                            train_dir=path/to/train_dir,
-                                                            test_dir=path/to/test_dir,
-                                                            transform=some_transform,
-                                                            batch_size=32,
-                                                            num_workers=4
-                                                          )
+      train_dataloader, valid_dataloader, test_dataloader, class_names = create_dataloaders(
+          train_dir: str,
+          valid_dir: str,
+          test_dir: str,
+          train_transforms: transforms.Compose,
+          test_transforms: transforms.Compose,
+          batch_size: int,
+          num_workers: int = NUM_WORKERS
+      )                                                                                  )
     """
 
     # Using ImageFolder to create datasets
     train_data = datasets.ImageFolder(train_dir, transform=train_transforms)
-    val_data = datasets.ImageFolder(valid_dir, transform=test_transforms)
+    valid_data = datasets.ImageFolder(valid_dir, transform=test_transforms)
     test_data = datasets.ImageFolder(test_dir, transform=test_transforms)
 
     # Getting classnames
@@ -57,7 +59,7 @@ def create_dataloaders(train_dir: str, valid_dir: str, test_dir: str, train_tran
         pin_memory=True
     )
     valid_dataloader = DataLoader(
-        val_data,
+        valid_data,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
@@ -71,25 +73,27 @@ def create_dataloaders(train_dir: str, valid_dir: str, test_dir: str, train_tran
         pin_memory=True
     )
 
-    print(f"Found {len(train_dataloader)} data for Train, {len(valid_dataloader)} data for Validations and {len(test_dataloader)} for Testing")
-
+    print(f"Data Loaded Succesfully")
+    print(f"Found {len(train_data)} data for Train, {len(valid_data)} data for Validations and {len(test_data)} for Testing")
+    print(f"class Names: {class_names}")
     return train_dataloader, test_dataloader, valid_dataloader, class_names
 
 
-def plot_transformed_images(image_paths: str, transform: transforms.Compose, n: int = 3, seed: int = 42):
+def plot_transformed_images(data_path: str, transform: transforms.Compose, n: int = 3, seed: int = 42):
     """Plots a series of random images from image_paths.
 
     Will open n image paths from image_paths, transform them
     with transform and plot them side by side.
 
     Args:
-        image_paths (list): List of target image paths. 
+        data_path (str): Path to data. 
         transform (PyTorch Transforms): Transforms to apply to images.
         n (int, optional): Number of images to plot. Defaults to 3.
         seed (int, optional): Random seed for the random generator. Defaults to 42.
     """
     random.seed(seed)
-    random_image_paths = random.sample(image_paths, k=n)
+    image_path_list = list(data_path.glob("*/*/*.jpg"))
+    random_image_paths = random.sample(image_path_list, k=n)
     for image_path in random_image_paths:
         with Image.open(image_path) as f:
             fig, ax = plt.subplots(1, 2)
@@ -101,7 +105,7 @@ def plot_transformed_images(image_paths: str, transform: transforms.Compose, n: 
             # Note: permute() will change shape of image to suit matplotlib
             # (PyTorch default is [C, H, W] but Matplotlib is [H, W, C])
             transformed_image = transform(f).permute(1, 2, 0)
-            ax[1].imshow(transformed_image, cmap='gray')
+            ax[1].imshow(transformed_image)
             ax[1].set_title(f"Transformed \nSize: {transformed_image.shape}")
             ax[1].axis("off")
 
