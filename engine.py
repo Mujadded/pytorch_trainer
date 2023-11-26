@@ -351,7 +351,7 @@ def train(model: torch.nn.Module,
 
             LOGGER.info(colorstr('Accuracy: ') +
                         f'{test_hash["test_accuracy"]*100:.2f}%')
-            logger.log_graph(model,imagesz=(image_size[1],image_size[2]))
+            logger.log_graph(model,imgsz=(image_size[1],image_size[2]))
             figure = plot_the_confusion_matrix(
                 class_names=class_names, y_pred=test_hash['prediction_tensors'], test_data=test_dataloader.dataset, task_type='MULTICLASS')
             logger.log_figure(figure, name="Confusion Matrix",epoch=epoch)
