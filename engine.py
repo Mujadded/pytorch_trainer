@@ -2,17 +2,29 @@
 Contains functions for training and validing a PyTorch model.
 """
 import torch
-
-from tqdm.auto import tqdm
+import os
+from tqdm import tqdm
 from typing import Dict, List, Tuple
+from logger import GenericLogger, colorstr, LOGGER, set_logging
+from torchinfo import summary
+from datetime import datetime
+from pathlib import Path
+from plot_from_model import plot_the_confusion_matrix
+
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+TQDM_BAR_FORMAT = '{l_bar}{bar:10}{r_bar}'
 
 
-def train_step(model: torch.nn.Module,
+def train_step(epoch: int,
+               epochs: int,
+               model: torch.nn.Module,
                dataloader: torch.utils.data.DataLoader,
+               val_dataloader: torch.utils.data.DataLoader,
                loss_fn: torch.nn.Module,
                optimizer: torch.optim.Optimizer,
+               scheduler: torch.optim.lr_scheduler,
+               early_stopper,
                device: torch.device) -> Tuple[float, float]:
     """Trains a PyTorch model for a single epoch.
 
@@ -37,10 +49,13 @@ def train_step(model: torch.nn.Module,
     model.train()
 
     # Setup train loss and train accuracy values
-    train_loss, train_acc = 0, 0
+    train_loss, train_acc = 0.0, 0.0
+    val_loss, valid_acc = 0, 0
+    pbar = tqdm(enumerate(dataloader), total=len(
+        dataloader), bar_format=TQDM_BAR_FORMAT)
 
     # Loop through data loader data batches
-    for batch, (X, y) in enumerate(dataloader):
+    for batch, (X, y) in pbar:
         # Send data to target device
         X, y = X.to(device), y.to(device)
 
@@ -49,7 +64,18 @@ def train_step(model: torch.nn.Module,
 
         # 2. Calculate  and accumulate loss
         loss = loss_fn(y_pred, y)
-        train_loss += loss.item()
+        # train_loss += loss.item()
+
+        train_loss = (train_loss * batch + loss.item()) / (batch + 1)
+        mem = '%.3gG' % (torch.cuda.memory_reserved() /
+                         1E9 if torch.cuda.is_available() else 0)  # (GB)
+
+        # Calculate and accumulate accuracy metric across all batches
+        y_pred_class = torch.argmax(torch.softmax(y_pred, dim=1), dim=1)
+        train_accuracy = (y_pred_class == y).sum().item()/len(y_pred)
+        train_acc = (train_acc * batch + train_accuracy) / (batch + 1)
+
+        pbar.desc = f"{f'{epoch + 1}/{epochs}':>10}{mem:>10}{train_loss:>12.3g}{train_acc*100:>12.3g}%" + ' ' * 36
 
         # 3. Optimizer zero grad
         optimizer.zero_grad()
@@ -60,14 +86,22 @@ def train_step(model: torch.nn.Module,
         # 5. Optimizer step
         optimizer.step()
 
-        # Calculate and accumulate accuracy metric across all batches
-        y_pred_class = torch.argmax(torch.softmax(y_pred, dim=1), dim=1)
-        train_acc += (y_pred_class == y).sum().item()/len(y_pred)
+        if batch == len(pbar) - 1:
+            if scheduler is not None:
+                # Taking the step in scheduler for learning rate decrease
+                scheduler.step()
 
-    # Adjust metrics to get average loss and accuracy per batch
-    train_loss = train_loss / len(dataloader)
-    train_acc = train_acc / len(dataloader)
-    return train_loss, train_acc
+            val_loss, valid_acc = valid_step(model=model,
+                                               dataloader=val_dataloader,
+                                               loss_fn=loss_fn,
+                                               device=device)
+
+            should_stop, early_stop_count = early_stopper.early_stop(
+                val_loss)
+
+            pbar.desc = f'{pbar.desc[:-36]}{val_loss:>11.3g}{valid_acc*100:>11.3g}%{early_stop_count:>10}' + "      "
+
+    return train_loss, train_acc, val_loss, valid_acc, should_stop
 
 
 def valid_step(model: torch.nn.Module,
@@ -82,20 +116,20 @@ def valid_step(model: torch.nn.Module,
     Args:
     model: A PyTorch model to be valided.
     dataloader: A DataLoader instance for the model to be valided on.
-    loss_fn: A PyTorch loss function to calculate loss on the valid data.
+    loss_fn: A PyTorch loss function to calculate loss on the val data.
     device: A target device to compute on (e.g. "cuda" or "cpu").
 
     Returns:
     A tuple of validing loss and validing accuracy metrics.
-    In the form (valid_loss, valid_accuracy). For example:
+    In the form (val_loss, valid_accuracy). For example:
 
     (0.0223, 0.8985)
     """
     # Put model in eval mode
     model.eval()
 
-    # Setup valid loss and valid accuracy values
-    valid_loss, valid_acc = 0, 0
+    # Setup val loss and val accuracy values
+    val_loss, valid_acc = 0, 0
 
     # Turn on inference context manager
     with torch.inference_mode():
@@ -109,7 +143,7 @@ def valid_step(model: torch.nn.Module,
 
             # 2. Calculate and accumulate loss
             loss = loss_fn(valid_pred_logits, y)
-            valid_loss += loss.item()
+            val_loss += loss.item()
 
             # Calculate and accumulate accuracy
             valid_pred_labels = valid_pred_logits.argmax(dim=1)
@@ -117,9 +151,9 @@ def valid_step(model: torch.nn.Module,
                           len(valid_pred_labels))
 
     # Adjust metrics to get average loss and accuracy per batch
-    valid_loss = valid_loss / len(dataloader)
+    val_loss = val_loss / len(dataloader)
     valid_acc = valid_acc / len(dataloader)
-    return valid_loss, valid_acc
+    return val_loss, valid_acc
 
 
 class EarlyStopper:
@@ -142,37 +176,40 @@ class EarlyStopper:
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
-        self.min_valid_loss = float('inf')
+        self.min_val_loss = float('inf')
 
-    def early_stop(self, valid_loss):
+    def early_stop(self, val_loss):
         """
           Gives signal to stop early if needed
 
           Parameters
           ----------
-          valid_loss : int, required
-              valid loss of the step
+          val_loss : int, required
+              val loss of the step
 
           Returns
           -------
           None
         """
-        if valid_loss < self.min_valid_loss:
-            self.min_valid_loss = valid_loss
+        output = f'{self.counter+1}/{self.patience}'
+
+        if val_loss < self.min_val_loss:
+            self.min_val_loss = val_loss
             self.counter = 0
-        elif valid_loss > (self.min_valid_loss + self.min_delta):
+        elif val_loss > (self.min_val_loss + self.min_delta):
             self.counter += 1
-            print(
-                f"Taking count of no valid loss improvement count: {self.counter}/{self.patience}")
             if self.counter >= self.patience:
                 print(f" ----------- Stopping Early ----------------")
-                return True
-        return False
+                return True, output
+        if self.counter == 0:
+            output = 'Start'
+        return False, output
 
 
 def train(model: torch.nn.Module,
           train_dataloader: torch.utils.data.DataLoader,
-          valid_dataloader: torch.utils.data.DataLoader,
+          val_dataloader: torch.utils.data.DataLoader,
+          test_dataloader: torch.utils.data.DataLoader,
           optimizer: torch.optim.Optimizer,
           loss_fn: torch.nn.Module,
           epochs: int,
@@ -181,41 +218,62 @@ def train(model: torch.nn.Module,
           early_stopper_min_delta: int = 0,
           device: torch.device = DEVICE
           ) -> Dict[str, List]:
-    """Trains and Valids a PyTorch model.
 
-    Passes a target PyTorch models through train_step() and valid_step()
-    functions for a number of epochs, training and validing the model
-    in the same epoch loop.
+    image_size = tuple(train_dataloader.dataset[0][0].shape)
+    batch_size = train_dataloader.batch_size
+    optimizer_name = type(optimizer).__name__
+    lr = optimizer.param_groups[0]['lr']
+    loss_fn_name = type(loss_fn).__name__
+    scheduler_name = type(scheduler).__name__
+    class_names = train_dataloader.dataset.classes
+    model_name = type(model).__name__
+    dataset_size = len(train_dataloader.dataset)
+    save_dir = Path('runs') / datetime.now().strftime("%Y%m%d-%H%M%S")
+    nc = len(class_names)
+    best_val_acc = 0.0
 
-    Calculates, prints and stores evaluation metrics throughout.
+    Path(save_dir / 'models').mkdir(parents=True, exist_ok=True)
+    Path(save_dir / 'tb').mkdir(parents=True, exist_ok=True)
 
-    Args:
-    model: A PyTorch model to be trained and valided.
-    train_dataloader: A DataLoader instance for the model to be trained on.
-    valid_dataloader: A DataLoader instance for the model to be valided on.
-    optimizer: A PyTorch optimizer to help minimize the loss function.
-    loss_fn: A PyTorch loss function to calculate loss on both datasets.
-    epochs: An integer indicating how many epochs to train for.
-    device: A target device to compute on (e.g. "cuda" or "cpu").
+    best, last = save_dir / 'models/best.pt', save_dir / 'models/last.pt'
 
-    Returns:
-    A dictionary of training and validing loss as well as training and
-    validing accuracy metrics. Each metric has a value in a list for 
-    each epoch.
-    In the form: {train_loss: [...],
-              train_acc: [...],
-              valid_loss: [...],
-              valid_acc: [...]} 
-    For example if training for epochs=2: 
-             {train_loss: [2.0616, 1.0537],
-              train_acc: [0.3945, 0.3945],
-              valid_loss: [1.2641, 1.5706],
-              valid_acc: [0.3400, 0.2973]} 
-    """
+    set_logging(model_name)
+    logger = GenericLogger(opt=save_dir / 'tb', console_logger=LOGGER)
+    # print(image_size)
+    hyperparameters = {
+        'epochs': epochs,
+        'image_size': image_size,
+        'batch_size': batch_size,
+        'optimizer': optimizer_name,
+        'lr': lr,
+        'loss': loss_fn_name,
+        'scheduler': scheduler_name,
+        'es_paitence': early_stopper_paitence,
+        'es_min_delta': early_stopper_min_delta,
+        'device': device,
+    }
+
+    # Get a summary of the model (uncomment for full output)
+    summary(model,
+            input_size=(1, *image_size),
+            verbose=0,
+            col_names=["input_size", "output_size", "num_params", "trainable"],
+            col_width=20,
+            row_settings=["var_names"]
+            )
+
+    LOGGER.info(colorstr('hyperparameters: ') +
+                ', '.join(f'{k}={v}' for k, v in hyperparameters.items()))
+
+    LOGGER.info(f'Image sizes {image_size} train, validation and test\n'
+                f"Logging results to {colorstr('bold', save_dir)}\n"
+                f'Starting {model_name} training on dataset of {dataset_size} images with {nc} classes for {epochs} epochs...\n\n'
+                f"{'Epoch':>10}{'GPU mem':>10}{'Train Loss':>12}{'Train Acc':>12}{'Val loss':>12}{'Val Acc':>12}{'ES Count':>12}")
+
     # Create empty results dictionary
     results = {"train_loss": [],
                "train_acc": [],
-               "valid_loss": [],
+               "val_loss": [],
                "valid_acc": []
                }
 
@@ -226,43 +284,82 @@ def train(model: torch.nn.Module,
     # Make sure model on target device
     model.to(device)
 
+    # Early Stopper for the model
+    early_stopper = EarlyStopper(
+        patience=early_stopper_paitence, min_delta=early_stopper_min_delta)
+
+    # Make sure model on target device
+    model.to(device)
+
     # Loop through training and validing steps for a number of epochs
-    for epoch in tqdm(range(epochs)):
-        train_loss, train_acc = train_step(model=model,
-                                           dataloader=train_dataloader,
-                                           loss_fn=loss_fn,
-                                           optimizer=optimizer,
-                                           device=device)
-
-        if scheduler is not None:
-            # Taking the step in scheduler for learning rate decrease
-            scheduler.step()
-
-        valid_loss, valid_acc = valid_step(model=model,
-                                           dataloader=valid_dataloader,
-                                           loss_fn=loss_fn,
-                                           device=device)
-
-        if early_stopper.early_stop(valid_loss):
-            break
+    for epoch in range(epochs):
+        train_loss, train_acc, val_loss, valid_acc, should_stop = train_step(epoch=epoch,
+                                                                               epochs=epochs,
+                                                                               model=model,
+                                                                               dataloader=train_dataloader,
+                                                                               val_dataloader=val_dataloader,
+                                                                               loss_fn=loss_fn,
+                                                                               optimizer=optimizer,
+                                                                               scheduler=scheduler,
+                                                                               early_stopper=early_stopper,
+                                                                               device=device)
 
         # Print out what's happening
-        print(
-            f"Epoch: {epoch+1} | "
-            f"train_loss: {train_loss:.4f} | "
-            f"train_acc: {train_acc:.4f} | "
-            f"valid_loss: {valid_loss:.4f} | "
-            f"valid_acc: {valid_acc:.4f}"
-        )
+        metrics = {
+            'train/loss': train_loss,
+            'val/loss': val_loss,
+            'train/acc': train_acc,
+            'val/acc': valid_acc,
+            'lr/0': lr
+        }  # learning rate
+
+        logger.log_metrics(metrics, epoch)
 
         # Update results dictionary
         results["train_loss"].append(train_loss)
         results["train_acc"].append(train_acc)
-        results["valid_loss"].append(valid_loss)
+        results["val_loss"].append(val_loss)
         results["valid_acc"].append(valid_acc)
 
+        best_val_acc = valid_acc if valid_acc > best_val_acc else best_val_acc
+        # Save model
+        final_epoch = epoch + 1 == epochs
+        ckpt = {
+            'epoch': epoch,
+            'best_fitness': best_val_acc,
+            'model': model_name,
+            'optimizer': optimizer_name,
+            'hyp': hyperparameters,
+            'date': datetime.now().isoformat(),
+        }
+
+        # Save last, best and delete
+        if best_val_acc == valid_acc:
+            torch.save(ckpt, best)
+
+        if final_epoch or should_stop:
+            torch.save(ckpt, last)
+            test_hash = test(model=model, test_dataloader=test_dataloader,
+                             loss_fn=loss_fn, device=device)
+            meta = {'epochs': epochs, 'val_acc': f'{best_val_acc*100:.2f}%',
+                    'test_acc': f'{test_hash["test_accuracy"]*100:.2f}%',
+                    'test_loss': test_hash['test_loss'],
+                    'date': datetime.now().isoformat()}
+
+            LOGGER.info(colorstr('Final Result: ') +
+                        ', '.join(f'{k}={v}' for k, v in meta.items()))
+
+            LOGGER.info(colorstr('Accuracy: ') +
+                        f'{test_hash["test_accuracy"]*100:.2f}%')
+            logger.log_graph(model,imagesz=(image_size[1],image_size[2]))
+            figure = plot_the_confusion_matrix(
+                class_names=class_names, y_pred=test_hash['prediction_tensors'], test_data=test_dataloader.dataset, task_type='MULTICLASS')
+            logger.log_figure(figure, name="Confusion Matrix",epoch=epoch)
+            break
+        del ckpt
+
     # Return the filled results at the end of the epochs
-    return results
+    # return results
 
 
 def test(model: torch.nn.Module,
@@ -285,6 +382,7 @@ def test(model: torch.nn.Module,
     y_preds = []  # List to store predictions
     test_loss = 0   # Variable to accumulate loss
     test_acc = 0    # Variable to accumulate accuracy
+    X_tests = []
 
     model.to(device)
     model.eval()
@@ -309,6 +407,8 @@ def test(model: torch.nn.Module,
 
             # Calculate accuracy
             test_acc += (y_pred == y).sum().item() / len(y_pred)
+            if len(X_tests) < 5:
+                X_tests.append(X.cpu())
 
         # Average loss and accuracy over the test set
         test_loss /= len(test_dataloader)
@@ -317,4 +417,6 @@ def test(model: torch.nn.Module,
     # Concatenate list of predictions into a tensor
     y_pred_tensor = torch.cat(y_preds)
 
-    return {"test_accuracy": test_acc, "test_loss": test_loss, "prediction_tensors": y_pred_tensor}
+    X_tests_5_tensor = torch.cat(X_tests)
+
+    return {"test_accuracy": test_acc, "test_loss": test_loss, "prediction_tensors": y_pred_tensor, "prediction_5_images": X_tests_5_tensor}

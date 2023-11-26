@@ -4,7 +4,7 @@ from mlxtend.plotting import plot_confusion_matrix
 import matplotlib.pyplot as plt
 from typing import Dict, List
 
-def plot_confusion_matrix(class_names: List[str], y_pred: torch.Tensor, test_data: torch.utils.data.Dataset, task_type: str) -> None:
+def plot_the_confusion_matrix(class_names: List[str], y_pred: torch.Tensor, test_data: torch.utils.data.Dataset, task_type: str) -> None:
     """
     Plots a confusion matrix using the predictions and targets from a classification model.
 
@@ -26,7 +26,8 @@ def plot_confusion_matrix(class_names: List[str], y_pred: torch.Tensor, test_dat
         conf_mat=confmat_tensor.numpy(),  # matplotlib likes working with NumPy
         class_names=class_names,  # turn the row and column labels into class names
         figsize=(10, 7)
-    );
+    )
+    return fig
 
 def plot_loss_curves(results: Dict[str, List[float]]) -> None:
     """

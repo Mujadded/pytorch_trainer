@@ -15,15 +15,15 @@ def walk_through_datafolder(data_path: str):
             f"There are {len(dirnames)} directories and {len(filenames)} images in {dirpath} ")
 
 
-def create_dataloaders(train_dir: str, valid_dir: str, test_dir: str, train_transforms: transforms.Compose, test_transforms: transforms.Compose, batch_size: int, num_workers: int = NUM_WORKERS):
+def create_dataloaders(train_dir: str, val_dir: str, test_dir: str, train_transforms: transforms.Compose, test_transforms: transforms.Compose, batch_size: int, num_workers: int = NUM_WORKERS):
     """Creates training, validation and testing Dataloders of pytorch.
 
     Args:
       train_dir (requried): Path to Train data directory
-      valid_dir (requried): Path to Validation data directory
+      val_dir (requried): Path to Validation data directory
       test_dir (requried): Path to Test data directory
       train_transforms (requried): Torchvision transforms for train DataLoader
-      test_transforms (requried): Torchvision transforms for valid and test DataLoader
+      test_transforms (requried): Torchvision transforms for val and test DataLoader
       batch_size: Number of samples per batch in the DataLoader
       num_workers: Number of workers to use in Dataloader (Default is os.cpu_count)
 
@@ -31,9 +31,9 @@ def create_dataloaders(train_dir: str, valid_dir: str, test_dir: str, train_tran
       A tuple of (train_dataloader, validation_dataloader, test_dataloader, class_names).
 
     Example usuage:
-      train_dataloader, valid_dataloader, test_dataloader, class_names = create_dataloaders(
+      train_dataloader, val_dataloader, test_dataloader, class_names = create_dataloaders(
           train_dir: str,
-          valid_dir: str,
+          val_dir: str,
           test_dir: str,
           train_transforms: transforms.Compose,
           test_transforms: transforms.Compose,
@@ -44,7 +44,7 @@ def create_dataloaders(train_dir: str, valid_dir: str, test_dir: str, train_tran
 
     # Using ImageFolder to create datasets
     train_data = datasets.ImageFolder(train_dir, transform=train_transforms)
-    valid_data = datasets.ImageFolder(valid_dir, transform=test_transforms)
+    val_data = datasets.ImageFolder(val_dir, transform=test_transforms)
     test_data = datasets.ImageFolder(test_dir, transform=test_transforms)
 
     # Getting classnames
@@ -58,8 +58,8 @@ def create_dataloaders(train_dir: str, valid_dir: str, test_dir: str, train_tran
         num_workers=num_workers,
         pin_memory=True
     )
-    valid_dataloader = DataLoader(
-        valid_data,
+    val_dataloader = DataLoader(
+        val_data,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
@@ -74,9 +74,9 @@ def create_dataloaders(train_dir: str, valid_dir: str, test_dir: str, train_tran
     )
 
     print(f"Data Loaded Succesfully")
-    print(f"Found {len(train_data)} data for Train, {len(valid_data)} data for Validations and {len(test_data)} for Testing")
+    print(f"Found {len(train_data)} data for Train, {len(val_data)} data for Validations and {len(test_data)} for Testing")
     print(f"class Names: {class_names}")
-    return train_dataloader, test_dataloader, valid_dataloader, class_names
+    return train_dataloader, test_dataloader, val_dataloader, class_names
 
 
 def plot_transformed_images(data_path: str, transform: transforms.Compose, n: int = 3, seed: int = 42):
