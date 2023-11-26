@@ -264,7 +264,7 @@ def train(model: torch.nn.Module,
                         row_settings=["var_names"]
                         ))
 
-    LOGGER.info(colorstr('hyperparameters: ') +
+    LOGGER.info(colorstr('Hyperparameters: ') +
                 ', '.join(f'{k}={v}' for k, v in hyperparameters.items()))
 
     LOGGER.info(f'Image sizes {image_size} train, validation and test\n'
