@@ -92,9 +92,9 @@ def train_step(epoch: int,
                 scheduler.step()
 
             val_loss, valid_acc = valid_step(model=model,
-                                               dataloader=val_dataloader,
-                                               loss_fn=loss_fn,
-                                               device=device)
+                                             dataloader=val_dataloader,
+                                             loss_fn=loss_fn,
+                                             device=device)
 
             should_stop, early_stop_count = early_stopper.early_stop(
                 val_loss)
@@ -233,12 +233,12 @@ def train(model: torch.nn.Module,
     best_val_acc = 0.0
 
     Path(save_dir / 'models').mkdir(parents=True, exist_ok=True)
-    Path(save_dir / 'tb').mkdir(parents=True, exist_ok=True)
+    Path(save_dir / 'logs').mkdir(parents=True, exist_ok=True)
 
     best, last = save_dir / 'models/best.pt', save_dir / 'models/last.pt'
 
     set_logging(model_name)
-    logger = GenericLogger(opt=save_dir / 'tb', console_logger=LOGGER)
+    logger = GenericLogger(opt=save_dir / 'logs', console_logger=LOGGER)
     # print(image_size)
     hyperparameters = {
         'epochs': epochs,
@@ -254,13 +254,15 @@ def train(model: torch.nn.Module,
     }
 
     # Get a summary of the model (uncomment for full output)
-    summary(model,
-            input_size=(1, *image_size),
-            verbose=0,
-            col_names=["input_size", "output_size", "num_params", "trainable"],
-            col_width=20,
-            row_settings=["var_names"]
-            )
+    LOGGER.info(colorstr('Model Structure: '))
+    LOGGER.info(summary(model,
+                        input_size=(1, *image_size),
+                        verbose=0,
+                        col_names=["input_size", "output_size",
+                                   "num_params", "trainable"],
+                        col_width=20,
+                        row_settings=["var_names"]
+                        ))
 
     LOGGER.info(colorstr('hyperparameters: ') +
                 ', '.join(f'{k}={v}' for k, v in hyperparameters.items()))
@@ -294,15 +296,15 @@ def train(model: torch.nn.Module,
     # Loop through training and validing steps for a number of epochs
     for epoch in range(epochs):
         train_loss, train_acc, val_loss, valid_acc, should_stop = train_step(epoch=epoch,
-                                                                               epochs=epochs,
-                                                                               model=model,
-                                                                               dataloader=train_dataloader,
-                                                                               val_dataloader=val_dataloader,
-                                                                               loss_fn=loss_fn,
-                                                                               optimizer=optimizer,
-                                                                               scheduler=scheduler,
-                                                                               early_stopper=early_stopper,
-                                                                               device=device)
+                                                                             epochs=epochs,
+                                                                             model=model,
+                                                                             dataloader=train_dataloader,
+                                                                             val_dataloader=val_dataloader,
+                                                                             loss_fn=loss_fn,
+                                                                             optimizer=optimizer,
+                                                                             scheduler=scheduler,
+                                                                             early_stopper=early_stopper,
+                                                                             device=device)
 
         # Print out what's happening
         metrics = {
@@ -351,10 +353,15 @@ def train(model: torch.nn.Module,
 
             LOGGER.info(colorstr('Accuracy: ') +
                         f'{test_hash["test_accuracy"]*100:.2f}%')
-            logger.log_graph(model,imgsz=(image_size[1],image_size[2]))
+            logger.log_graph(model, imgsz=(image_size[1], image_size[2]))
+            confusion_matrix_type = 'binary' if len(class_names) <= 2 else 'multiclass'
             figure = plot_the_confusion_matrix(
-                class_names=class_names, y_pred=test_hash['prediction_tensors'], test_data=test_dataloader.dataset, task_type='MULTICLASS')
-            logger.log_figure(figure, name="Confusion Matrix",epoch=epoch)
+                class_names=class_names, 
+                y_pred=test_hash['prediction_tensors'], 
+                test_data=test_dataloader.dataset, 
+                task_type=confusion_matrix_type
+                )
+            logger.log_figure(figure, name="Confusion Matrix", epoch=epoch)
             break
         del ckpt
 
