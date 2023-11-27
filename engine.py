@@ -5,12 +5,12 @@ import torch
 import os
 from tqdm import tqdm
 from typing import Dict, List, Tuple
-from logger import GenericLogger, colorstr, LOGGER, set_logging
+from pytorch_trainer.logger import GenericLogger, colorstr, LOGGER, set_logging
 from torchinfo import summary
 from datetime import datetime
 from pathlib import Path
-from plot_from_model import plot_the_confusion_matrix
-
+from pytorch_trainer.plot_from_model import plot_the_confusion_matrix, plot_loss_curves
+from pytorch_trainer.dataloaders import plot_random_images_from_dataloader
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 TQDM_BAR_FORMAT = '{l_bar}{bar:10}{r_bar}'
@@ -50,7 +50,7 @@ def train_step(epoch: int,
 
     # Setup train loss and train accuracy values
     train_loss, train_acc = 0.0, 0.0
-    val_loss, valid_acc = 0, 0
+    val_loss, val_acc = 0, 0
     pbar = tqdm(enumerate(dataloader), total=len(
         dataloader), bar_format=TQDM_BAR_FORMAT)
 
@@ -91,7 +91,7 @@ def train_step(epoch: int,
                 # Taking the step in scheduler for learning rate decrease
                 scheduler.step()
 
-            val_loss, valid_acc = valid_step(model=model,
+            val_loss, val_acc = valid_step(model=model,
                                              dataloader=val_dataloader,
                                              loss_fn=loss_fn,
                                              device=device)
@@ -99,9 +99,9 @@ def train_step(epoch: int,
             should_stop, early_stop_count = early_stopper.early_stop(
                 val_loss)
 
-            pbar.desc = f'{pbar.desc[:-36]}{val_loss:>11.3g}{valid_acc*100:>11.3g}%{early_stop_count:>10}' + "      "
+            pbar.desc = f'{pbar.desc[:-36]}{val_loss:>11.3g}{val_acc*100:>11.3g}%{early_stop_count:>10}' + "      "
 
-    return train_loss, train_acc, val_loss, valid_acc, should_stop
+    return train_loss, train_acc, val_loss, val_acc, should_stop
 
 
 def valid_step(model: torch.nn.Module,
@@ -121,7 +121,7 @@ def valid_step(model: torch.nn.Module,
 
     Returns:
     A tuple of validing loss and validing accuracy metrics.
-    In the form (val_loss, valid_accuracy). For example:
+    In the form (val_loss, val_accuracy). For example:
 
     (0.0223, 0.8985)
     """
@@ -129,7 +129,7 @@ def valid_step(model: torch.nn.Module,
     model.eval()
 
     # Setup val loss and val accuracy values
-    val_loss, valid_acc = 0, 0
+    val_loss, val_acc = 0, 0
 
     # Turn on inference context manager
     with torch.inference_mode():
@@ -147,13 +147,13 @@ def valid_step(model: torch.nn.Module,
 
             # Calculate and accumulate accuracy
             valid_pred_labels = valid_pred_logits.argmax(dim=1)
-            valid_acc += ((valid_pred_labels == y).sum().item() /
+            val_acc += ((valid_pred_labels == y).sum().item() /
                           len(valid_pred_labels))
 
     # Adjust metrics to get average loss and accuracy per batch
     val_loss = val_loss / len(dataloader)
-    valid_acc = valid_acc / len(dataloader)
-    return val_loss, valid_acc
+    val_acc = val_acc / len(dataloader)
+    return val_loss, val_acc
 
 
 class EarlyStopper:
@@ -199,7 +199,6 @@ class EarlyStopper:
         elif val_loss > (self.min_val_loss + self.min_delta):
             self.counter += 1
             if self.counter >= self.patience:
-                print(f" ----------- Stopping Early ----------------")
                 return True, output
         if self.counter == 0:
             output = 'Start'
@@ -223,6 +222,8 @@ def train(model: torch.nn.Module,
     batch_size = train_dataloader.batch_size
     optimizer_name = type(optimizer).__name__
     lr = optimizer.param_groups[0]['lr']
+    betas = optimizer.param_groups[0]['betas']
+    weight_decay = optimizer.param_groups[0]['weight_decay']
     loss_fn_name = type(loss_fn).__name__
     scheduler_name = type(scheduler).__name__
     class_names = train_dataloader.dataset.classes
@@ -231,6 +232,7 @@ def train(model: torch.nn.Module,
     save_dir = Path('runs') / datetime.now().strftime("%Y%m%d-%H%M%S")
     nc = len(class_names)
     best_val_acc = 0.0
+    best_val_loss = 999
 
     Path(save_dir / 'models').mkdir(parents=True, exist_ok=True)
     Path(save_dir / 'logs').mkdir(parents=True, exist_ok=True)
@@ -246,12 +248,19 @@ def train(model: torch.nn.Module,
         'batch_size': batch_size,
         'optimizer': optimizer_name,
         'lr': lr,
+        'betas': betas,
+        'weight_decay': weight_decay,
         'loss': loss_fn_name,
         'scheduler': scheduler_name,
         'es_paitence': early_stopper_paitence,
         'es_min_delta': early_stopper_min_delta,
         'device': device,
     }
+
+    logger.log_hyperparameters(hyperparameters)
+
+    LOGGER.info(colorstr('Hyperparameters: ') +
+                ', '.join(f'{k}={v}' for k, v in hyperparameters.items()))
 
     # Get a summary of the model (uncomment for full output)
     LOGGER.info(colorstr('Model Structure: '))
@@ -264,9 +273,6 @@ def train(model: torch.nn.Module,
                         row_settings=["var_names"]
                         ))
 
-    LOGGER.info(colorstr('Hyperparameters: ') +
-                ', '.join(f'{k}={v}' for k, v in hyperparameters.items()))
-
     LOGGER.info(f'Image sizes {image_size} train, validation and test\n'
                 f"Logging results to {colorstr('bold', save_dir)}\n"
                 f'Starting {model_name} training on dataset of {dataset_size} images with {nc} classes for {epochs} epochs...\n\n'
@@ -276,8 +282,11 @@ def train(model: torch.nn.Module,
     results = {"train_loss": [],
                "train_acc": [],
                "val_loss": [],
-               "valid_acc": []
+               "val_acc": []
                }
+    
+    figure = plot_random_images_from_dataloader(train_dataloader, class_names)
+    logger.log_figure(figure, name="Images From Train dataset", epoch=0)
 
     # Early Stopper for the model
     early_stopper = EarlyStopper(
@@ -295,7 +304,7 @@ def train(model: torch.nn.Module,
 
     # Loop through training and validing steps for a number of epochs
     for epoch in range(epochs):
-        train_loss, train_acc, val_loss, valid_acc, should_stop = train_step(epoch=epoch,
+        train_loss, train_acc, val_loss, val_acc, should_stop = train_step(epoch=epoch,
                                                                              epochs=epochs,
                                                                              model=model,
                                                                              dataloader=train_dataloader,
@@ -311,7 +320,7 @@ def train(model: torch.nn.Module,
             'train/loss': train_loss,
             'val/loss': val_loss,
             'train/acc': train_acc,
-            'val/acc': valid_acc,
+            'val/acc': val_acc,
             'lr/0': lr
         }  # learning rate
 
@@ -321,10 +330,12 @@ def train(model: torch.nn.Module,
         results["train_loss"].append(train_loss)
         results["train_acc"].append(train_acc)
         results["val_loss"].append(val_loss)
-        results["valid_acc"].append(valid_acc)
+        results["val_acc"].append(val_acc)
 
-        best_val_acc = valid_acc if valid_acc > best_val_acc else best_val_acc
         # Save model
+        best_val_acc = val_acc if val_acc >= best_val_acc else best_val_acc
+        best_val_loss = val_loss if val_loss < best_val_loss else best_val_acc
+
         final_epoch = epoch + 1 == epochs
         ckpt = {
             'epoch': epoch,
@@ -336,11 +347,20 @@ def train(model: torch.nn.Module,
         }
 
         # Save last, best and delete
-        if best_val_acc == valid_acc:
+        if best_val_acc == val_acc and best_val_loss == val_loss:
             torch.save(ckpt, best)
 
         if final_epoch or should_stop:
             torch.save(ckpt, last)
+
+            LOGGER.info('Plotting Graphs for Model')
+
+            plots = plot_loss_curves(results=results)
+            logger.log_figure(plots, name="Model Plots", epoch=epoch)
+
+            model.load_state_dict(torch.load(best), strict=False)
+            LOGGER.info(colorstr('Test Model: ')+ f'loading best model with val acc of {best_val_acc*100:.2f}%')
+            
             test_hash = test(model=model, test_dataloader=test_dataloader,
                              loss_fn=loss_fn, device=device)
             meta = {'epochs': epochs, 'val_acc': f'{best_val_acc*100:.2f}%',
@@ -362,6 +382,8 @@ def train(model: torch.nn.Module,
                 task_type=confusion_matrix_type
                 )
             logger.log_figure(figure, name="Confusion Matrix", epoch=epoch)
+            LOGGER.info("------------------------------------------------------- Finished ------------------------------------------------------------")
+
             break
         del ckpt
 

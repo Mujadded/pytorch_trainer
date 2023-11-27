@@ -45,7 +45,7 @@ def plot_loss_curves(results: Dict[str, List[float]]) -> None:
     test_accuracy = results["val_acc"]
     epochs = range(len(results["train_loss"]))
 
-    plt.figure(figsize=(15, 7))
+    figure = plt.figure(figsize=(15, 7))
 
     plt.subplot(1, 2, 1)
     plt.plot(epochs, loss, label="train_loss")
@@ -60,3 +60,5 @@ def plot_loss_curves(results: Dict[str, List[float]]) -> None:
     plt.title("Accuracy")
     plt.xlabel("Epochs")
     plt.legend()
+
+    return figure

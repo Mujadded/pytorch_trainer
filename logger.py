@@ -1,6 +1,6 @@
 import logging
 import logging.config
-
+import json
 import platform
 import os
 
@@ -101,6 +101,7 @@ class GenericLogger:
         self.include = include
         self.console_logger = console_logger
         self.csv = self.save_dir / 'results.csv'  # CSV logger
+        self.hyp = self.save_dir / 'hyperparameters.json'  # CSV logger
         if 'tb' in self.include:
             prefix = colorstr('TensorBoard: ')
             self.console_logger.info(
@@ -108,6 +109,10 @@ class GenericLogger:
             self.tb = SummaryWriter(str(self.save_dir))
 
         self.wandb = None
+    
+    def log_hyperparameters(self, hyp):
+        with open(self.hyp, 'w') as fp:
+            json.dump(hyp, fp)
 
     def log_metrics(self, metrics, epoch):
         # Log metrics dictionary to all loggers
@@ -144,11 +149,3 @@ def log_tensorboard_graph(tb, model, imgsz=(640, 640)):
             tb.add_graph(torch.jit.trace(model, im, strict=False), [])
     except Exception as e:
         LOGGER.warning(f'WARNING ⚠️ TensorBoard graph visualization failure {e}')
-
-
-def web_project_name(project):
-    # Convert local project name to web project name
-    if not project.startswith('runs/train'):
-        return project
-    suffix = '-Classify' if project.endswith('-cls') else '-Segment' if project.endswith('-seg') else ''
-    return f'YOLOv5{suffix}'

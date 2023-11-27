@@ -5,6 +5,9 @@ import matplotlib.pyplot as plt
 import random
 import os
 from PIL import Image
+from pytorch_trainer.logger import colorstr, LOGGER
+from pathlib import Path
+import numpy as np
 
 NUM_WORKERS = os.cpu_count()
 
@@ -73,9 +76,8 @@ def create_dataloaders(train_dir: str, val_dir: str, test_dir: str, train_transf
         pin_memory=True
     )
 
-    print(f"Data Loaded Succesfully")
-    print(f"Found {len(train_data)} data for Train, {len(val_data)} data for Validations and {len(test_data)} for Testing")
-    print(f"class Names: {class_names}")
+    LOGGER.info(colorstr('Data Loaded: ')+ f"Found {len(train_data)} data for Train, {len(val_data)} data for Validations and {len(test_data)} for Testing")
+    LOGGER.info(colorstr('Class Names: ')+ ' | '.join(class_names))
     return train_dataloader, test_dataloader, val_dataloader, class_names
 
 
@@ -112,7 +114,7 @@ def plot_transformed_images(data_path: str, transform: transforms.Compose, n: in
             fig.suptitle(f"Class: {image_path.parent.stem}", fontsize=16)
 
 
-def plot_random_images_from_dataloader(dataloader: DataLoader, class_names):
+def plot_random_images_from_dataloader(dataloader, class_names):
   """Plots a batch of images in the dataloader.
 
     Will show the images that will be used in the network
@@ -133,5 +135,7 @@ def plot_random_images_from_dataloader(dataloader: DataLoader, class_names):
     figure.add_subplot(rows, cols, i)
     plt.title(class_names[label])
     plt.axis("Off");
-    plt.imshow(img.squeeze().permute(1,2,0))
-  plt.show()
+    # plt.imshow((img.squeeze().permute(1,2,0)).numpy().astype(np.uint8));
+    image = np.clip(img.squeeze().permute(1,2,0), 0, 1)
+    plt.imshow(image);
+  return figure
