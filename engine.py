@@ -3,6 +3,7 @@ Contains functions for training and validing a PyTorch model.
 """
 import torch
 import os
+import sys
 from tqdm import tqdm
 from typing import Dict, List, Tuple
 from pytorch_trainer.logger import GenericLogger, colorstr, LOGGER, set_logging
@@ -87,9 +88,6 @@ def train_step(epoch: int,
         optimizer.step()
 
         if batch == len(pbar) - 1:
-            if scheduler is not None:
-                # Taking the step in scheduler for learning rate decrease
-                scheduler.step()
 
             val_loss, val_acc = valid_step(model=model,
                                              dataloader=val_dataloader,
@@ -98,6 +96,10 @@ def train_step(epoch: int,
 
             should_stop, early_stop_count = early_stopper.early_stop(
                 val_loss)
+
+            if scheduler is not None:
+            # Taking the step in scheduler for learning rate decrease
+                scheduler.step(val_loss)
 
             pbar.desc = f'{pbar.desc[:-36]}{val_loss:>11.3g}{val_acc*100:>11.3g}%{early_stop_count:>10}' + "      "
 
@@ -215,8 +217,18 @@ def train(model: torch.nn.Module,
           scheduler: torch.optim.lr_scheduler = None,
           early_stopper_paitence: int = 10,
           early_stopper_min_delta: int = 0,
-          device: torch.device = DEVICE
+          device: torch.device = DEVICE,
+          file_name: str = None,
           ) -> Dict[str, List]:
+
+    if file_name is not None:
+        folder_name = file_name
+    else:
+        folder_name = sys.argv[0]
+        folder_name = folder_name.replace('.py','')
+    
+    save_dir = Path('runs')/ folder_name / datetime.now().strftime("%Y%m%d-%H%M%S")
+
 
     image_size = tuple(train_dataloader.dataset[0][0].shape)
     batch_size = train_dataloader.batch_size
@@ -229,10 +241,9 @@ def train(model: torch.nn.Module,
     class_names = train_dataloader.dataset.classes
     model_name = type(model).__name__
     dataset_size = len(train_dataloader.dataset)
-    save_dir = Path('runs') / datetime.now().strftime("%Y%m%d-%H%M%S")
     nc = len(class_names)
     best_val_acc = 0.0
-    best_val_loss = 999
+    min_val_loss = float('inf')
 
     Path(save_dir / 'models').mkdir(parents=True, exist_ok=True)
     Path(save_dir / 'logs').mkdir(parents=True, exist_ok=True)
@@ -334,7 +345,7 @@ def train(model: torch.nn.Module,
 
         # Save model
         best_val_acc = val_acc if val_acc >= best_val_acc else best_val_acc
-        best_val_loss = val_loss if val_loss < best_val_loss else best_val_acc
+        min_val_loss = val_loss if val_loss <= min_val_loss else best_val_acc
 
         final_epoch = epoch + 1 == epochs
         ckpt = {
@@ -347,7 +358,7 @@ def train(model: torch.nn.Module,
         }
 
         # Save last, best and delete
-        if best_val_acc == val_acc and best_val_loss == val_loss:
+        if best_val_acc == val_acc and min_val_loss == val_loss:
             torch.save(ckpt, best)
 
         if final_epoch or should_stop:
@@ -359,7 +370,7 @@ def train(model: torch.nn.Module,
             logger.log_figure(plots, name="Model Plots", epoch=epoch)
 
             model.load_state_dict(torch.load(best), strict=False)
-            LOGGER.info(colorstr('Test Model: ')+ f'loading best model with val acc of {best_val_acc*100:.2f}%')
+            LOGGER.info(colorstr('Test Model: ')+ f'loading best model with val acc of {best_val_acc*100:.2f}% and val loss of {min_val_loss:.4f}')
             
             test_hash = test(model=model, test_dataloader=test_dataloader,
                              loss_fn=loss_fn, device=device)

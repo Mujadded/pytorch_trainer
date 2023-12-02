@@ -8,6 +8,7 @@ from PIL import Image
 from pytorch_trainer.logger import colorstr, LOGGER
 from pathlib import Path
 import numpy as np
+import math
 
 NUM_WORKERS = os.cpu_count()
 
@@ -124,11 +125,11 @@ def plot_random_images_from_dataloader(dataloader, class_names):
         class_names (list): List of class names
     """
   features_batch, labels_batch = next(iter(dataloader))
-  batch_size = dataloader.batch_size
-  if batch_size > 4:
+  batch_size = len(features_batch)
+  if batch_size > 16:
     cols = rows = 4
   else:
-    cols = rows = int(batch_size/2)
+    cols = rows = int(math.sqrt(batch_size))
   figure = plt.figure(figsize=(8, 8))
   for i in range(1, cols * rows + 1):
     img, label = features_batch[i-1], labels_batch[i-1]
